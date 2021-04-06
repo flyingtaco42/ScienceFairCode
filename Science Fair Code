@@ -1,0 +1,211 @@
+for (i in sample_meta$sample) {
+  file1 = (sample_meta %>% filter(sample == i))$file
+  dset.i = read.csv(file = file1, sep = "\t", header = TRUE, row.names = 1)
+  seurat_list[[i]] <- CreateSeuratObject(counts = dset.i)
+}
+dset.all <-merge(seurat_list[["NAG1"]], 
+                 y=c(seurat_list[["IMW1"]],seurat_list[["IMW2"]],seurat_list[["IMS1"]],seurat_list[["IMS2"]],seurat_list[["IMS3"]],
+                     seurat_list[["IMS4"]],seurat_list[["EGC"]]), add.cell.ids = sample_meta$sample, project="myproj")
+dset.all[["percent.mt"]] <- PercentageFeatureSet(dset.all, pattern = "^MT-")
+FeatureScatter(dset.all, feature1 = "nCount_RNA", feature2 = "percent.mt")
+FeatureScatter(dset.all, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+dset.all <- subset(dset.all, subset = nFeature_RNA > 200 & nCount_RNA < 20000 & percent.mt < 20)
+#### normalizes the feature expression levels by the total expression for each cell.
+dset.all <- NormalizeData(dset.all)
+#### Identification of Highly Variable Features
+dset.all <- FindVariableFeatures(dset.all)
+VariableFeaturePlot(dset.all)
+#### Data Scaling
+dset.all <- ScaleData(dset.all, features = rownames(dset.all))
+#### PCA
+dset.all <- RunPCA(dset.all, features = VariableFeatures(object = dset.all), npcs = 50)
+#### cell clustering
+dset.all <- FindNeighbors(dset.all, dims = 1:30)
+dset.all <- FindClusters(dset.all, resolution = 1)
+#### Running t-SNE
+dset.all <- RunTSNE(dset.all, dims = 1:30, tsne.method = "Rtsne")
+DimPlot(object = dset.all, reduction = "pca", label = TRUE) #### PCA plot
+DimPlot(object = dset.all, reduction = "tsne", label = TRUE) #### tSNE plot
+TSNEPlot(object = dset.all, label = TRUE) #### same tSNE plot
+dset.all[['sample']] = substr(colnames(dset.all),1,4)
+TSNEPlot(object = dset.all, label = TRUE, group.by = "sample") #### same tSNE plot
+
+dset.all.markers <- FindAllMarkers(dset.all) #### data.frame
+dset.all.markers <- dset.all.markers %>% arrange(p_val)
+FeaturePlot(object = dset.all, features = c('FABP1','CA1','VIL1'), 
+            cols = c("grey", "red"), pt.size = 0.5, reduction = "tsne")
+
+dset.cell.df = dset.all[[]]
+dset.cell.tib = dset.cell.df %>% as_tibble() %>% mutate(cell_id = rownames(dset.cell.df))
+cluster.gene = read_tsv('clusteredcells.tsv') %>% mutate(Cluster = as.factor(Cluster))
+dset.cell.tib = dset.cell.tib %>% inner_join(cluster.gene, by=c("seurat_clusters"="Cluster")) %>% 
+  mutate(sample = substr(cell_id, 1,4))
+dset.cell.tib = dset.cell.tib %>% inner_join(sample_meta) %>% select(-file, -subject)
+dset.all[["Cell_type"]] = dset.cell.tib$Cells
+dset.all[["Sample"]] = dset.cell.tib$sample
+TSNEPlot(object = dset.all, label = TRUE, group.by = "H.pylori")
+dset.all[['H.pylori']] = dset.cell.tib$H.pylori
+#^adding more info to the seurat
+#new session from here
+allcelltypes = dset.cell.tib$Cells %>% unique()
+cellgenelist = list()
+for(i in allcelltypes){
+  sub.cell = subset(dset.all, subset = Cell_type == i)
+  Idents(sub.cell) = 'H.pylori'
+  cellgenelist[[i]] =  FindMarkers(sub.cell, ident.1 = 'y')
+}
+
+write_tsv(fibroblast, 'fibroblast.tsv')
+
+i = 'GMC'
+sub.cell = subset(dset.all, subset = Cell_type == i)
+Idents(sub.cell) = 'H.pylori'
+(cellgenelist[[i]] %>% rownames())[1:20]
+DoHeatmap(sub.cell, features = (cellgenelist[[i]] %>% rownames())[1:50])
+i = 'PMC'
+i = 'Enterocyte'
+sub.cell = subset(dset.all, subset = Cell_type == i)
+Idents(sub.cell) = 'H.pylori'
+dim(cellgenelist[[i]])
+ordered.genes = cellgenelist[[i]] 
+ordered.genes = ordered.genes[1:50,] %>% arrange(desc(avg_logFC))
+DoHeatmap(sub.cell, features = rownames(ordered.genes))
+
+cellgenelist[[-1]] 
+for(i in allcelltypes){
+  x = cellgenelist[[i]]
+  j = sub("\\W", "_", i)
+  y = x %>% as_tibble() %>% mutate(gene = rownames(x))
+  write_tsv(y, paste("Genelist", j , "tsv", sep = "."), )
+}
+
+#table with data about cell stuff
+dset.all.cells.meta = dset.all[[]] %>% as_tibble
+dset.all.cells.meta.sum = dset.all.cells.meta %>% group_by(Cell_type, H.pylori) %>% summarise(total_cells = length(Sample))
+dset.temp.pos = dset.all.cells.meta.sum %>% filter(H.pylori == 'y') %>% select(-2)
+colnames(dset.temp.pos) [2] = 'Positive_count'
+dset.temp.neg = dset.all.cells.meta.sum %>% filter(H.pylori == 'n') %>% select(-2)
+colnames(dset.temp.neg) [2] = 'Negative_count'
+dset.temp.pos %>% inner_join(dset.temp.neg) %>% write_tsv("Cell_meta.tsv")
+
+
+
+#new gene list w/ up and down reg
+#positive FC means upregulated in h. pylori
+newcellgenelist = list()
+for(i in allcelltypes){
+  x = cellgenelist[[i]]
+  j = sub("\\W", "_", i)
+  y = x %>% as_tibble() %>% mutate(gene = rownames(x))
+  y.positive = y %>% filter(avg_logFC > 0) %>% filter(p_val_adj < 0.05)
+  y.negative = y %>% filter(avg_logFC < 0) %>% filter(p_val_adj < 0.05)
+  write_tsv(y.positive, paste("Genelist.upregulated", j , "tsv", sep = "."), )
+  write_tsv(y.negative, paste("Genelist.downregulated", j , "tsv", sep = "."), )
+}
+
+#machine learning
+dset.PMC = subset(dset.all, subset = Cell_type == 'PMC')
+Idents(dset.PMC) = 'H.pylori'
+sig.gene.PMC = FindMarkers(dset.PMC, ident.1="y", logfc.threshold = 0.5)
+sig.gene.PMC1 = sig.gene.PMC %>% as_tibble() %>% mutate(gene = rownames(sig.gene.PMC)) %>% filter(p_val_adj < 0.05)
+
+dset.PMC = RunUMAP(dset.PMC, dims = 1:5)
+DimPlot(dset.PMC, reduction = "umap")
+DimPlot(dset.PMC, reduction = "tsne")
+dset.PMC.meta = dset.PMC[[]] %>% as_tibble()
+dset.PMC.meta = dset.PMC.meta %>% mutate(sample_lab = paste(Sample, H.pylori, sep="."))
+dset.PMC[["sample_lab"]] = dset.PMC.meta$sample_lab
+DimPlot(dset.PMC, reduction = "umap", group.by = c("Sample","H.pylori"))
+DimPlot(dset.PMC, reduction = "umap", group.by = c("sample_lab"))
+DimPlot(dset.PMC, reduction = "umap", group.by = c("sample_lab","H.pylori"))
+
+dset.PMC.scale.data = GetAssayData(object = dset.PMC, slot = "scale.data") %>% as.data.frame()
+dset.PMC.scale.data.sig = dset.PMC.scale.data[sig.gene.PMC1$gene, ]%>% t() %>% as.data.frame()
+#dset.PMC.scale.data.sig$H.pylori = dset.PMC[[]]$H.pylori
+dset.PMC.scale.data.sig$H.pylori = as.factor(dset.PMC[[]]$H.pylori)
+
+#direct random forest training
+tdf = dset.PMC.scale.data.sig
+colnames(tdf) = gsub("-",".",colnames(tdf))
+set.seed(50)
+#tdf$H.pylori = as.factor(tdf$H.pylori)
+rf_fit.1.raw = randomForest(H.pylori ~ ., data = tdf, mtry=10, proximity=TRUE)
+plot(rf_fit.1.raw) #### 
+varImpPlot(rf_fit.1.raw) #### giniindex
+MDSplot(rf_fit.1.raw, tdf$H.pylori) #### MDS plot
+rf_fit.1.raw
+
+#train random forest model using caret default training configs
+control.default <- trainControl(method="repeatedcv", number=5, repeats=5)
+set.seed(42)
+rf_fit <- train(H.pylori ~ ., data = dset.PMC.scale.data.sig, method = "rf", trControl = control.default, verbose = FALSE)
+plot(rf_fit)
+ggplot(rf_fit)
+rf_fit
+
+
+#### train with configured grid
+control = trainControl(method="repeatedcv", number=5, repeats=5)
+set.seed(42)
+mtry = sqrt(ncol(dset.PMC.scale.data.sig)) %>% as.integer() ## -> 10
+rf.grid = expand.grid(mtry = seq.int(6, 12, by=2))
+rf_fit2 = train(H.pylori ~ ., data = dset.PMC.scale.data.sig, method = "rf", trControl = control, 
+                metric="Accuracy", tuneGrid=rf.grid, verbose = TRUE)
+plot(rf_fit2)
+rf_fit2
+predict(rf_fit2, newdata = dset.PMC.scale.data.sig[1:20, ])
+
+#final model mtry = 8
+tdf = dset.PMC.scale.data.sig
+colnames(tdf) = gsub("-",".",colnames(tdf))
+set.seed(50)
+#tdf$H.pylori = as.factor(tdf$H.pylori)
+rf_fit.1.raw = randomForest(H.pylori ~ ., data = tdf, mtry=8, proximity=TRUE)
+plot(rf_fit.1.raw) #### 
+varImpPlot(rf_fit.1.raw, main="Final Random Forest Model Predictors") #### giniindex
+MDSplot(rf_fit.1.raw, tdf$H.pylori) #### MDS plot
+rf_fit.1.raw
+
+
+#random forest for severity
+dset.PMC.hp = subset(dset.PMC, subset = H.pylori == 'y')
+dset.PMC.hp.meta = dset.PMC.hp[[]] %>% as_tibble()
+dset.PMC.hp.meta = dset.PMC.hp.meta %>% mutate(severity = substr(Sample, 1, 3)) %>%
+  mutate(severity = as.factor(severity))
+dset.PMC.hp[["severity"]] = dset.PMC.hp.meta$severity
+Idents(dset.PMC.hp) = 'severity'
+sig.gene.PMC.hp = FindMarkers(dset.PMC.hp, ident.1="IMW", logfc.threshold = 0.5)
+sig.gene.PMC.hp1 = sig.gene.PMC.hp %>% as_tibble() %>% mutate(gene = rownames(sig.gene.PMC.hp)) %>% filter(p_val_adj < 0.05)
+
+dset.PMC.hp = RunUMAP(dset.PMC.hp, dims = 1:5)
+DimPlot(dset.PMC.hp, reduction = "umap")
+DimPlot(dset.PMC.hp, reduction = "tsne")
+
+dset.PMC.scale.data.hp = GetAssayData(object = dset.PMC.hp, slot = "scale.data") %>% as.data.frame()
+dset.PMC.scale.data.sig.hp = dset.PMC.scale.data.hp[sig.gene.PMC.hp1$gene, ]%>% t() %>% as.data.frame()
+dset.PMC.scale.data.sig.hp$severity = dset.PMC.hp[[]]$severity
+#search for optimal mtry
+control = trainControl(method="repeatedcv", number=5, repeats=5)
+set.seed(42)
+mtry = sqrt(ncol(dset.PMC.scale.data.sig.hp)) %>% as.integer() ## -> 10
+rf.grid = expand.grid(mtry = seq.int(10, 16, by=2))
+rf_fit2.hp = train(severity ~ ., data = dset.PMC.scale.data.sig.hp, method = "rf", trControl = control, 
+                metric="Accuracy", tuneGrid=rf.grid, verbose = TRUE)
+plot(rf_fit2.hp)
+rf_fit2.hp
+
+#final random forest for severity mtry = 14
+tdf.hp = dset.PMC.scale.data.sig.hp
+colnames(tdf.hp) = gsub("-",".",colnames(tdf.hp))
+set.seed(50)
+rf_fit.1.raw.hp = randomForest(severity ~ ., data = tdf.hp, mtry=14, proximity=TRUE)
+plot(rf_fit.1.raw.hp) #### 
+varImpPlot(rf_fit.1.raw.hp, main="Final Random Forest Model Predictors") #### giniindex
+MDSplot(rf_fit.1.raw.hp, tdf$H.pylori) #### MDS plot
+rf_fit.1.raw.hp
+
+set.seed(42)
+svm_fit <- train(H.pylori ~ ., data = dset.PMC.scale.data.sig, method = "svmLinearWeights", 
+                 trControl = control.default, verbose = FALSE)
+plot(svm_fit)
+
